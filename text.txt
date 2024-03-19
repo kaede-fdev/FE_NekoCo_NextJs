@@ -1,0 +1,226 @@
+"use client";
+import { getAllFollowingUser, getUserChatMessage } from "@/apis/messageAPI";
+import { COOKIES_KEY } from "@/utils/cookies/keys";
+import { UserData } from "@/utils/types/People";
+import { getCookie } from "cookies-next";
+import { useTheme } from "next-themes";
+import { headers } from "next/headers";
+import { useEffect, useRef, useState } from "react";
+import SockJS from "sockjs-client";
+import Stomp from "stompjs";
+
+import { Button, Image, Input } from "@nextui-org/react";
+import { Avatar, AvatarGroup, AvatarIcon } from "@nextui-org/react";
+import { MessageFields } from "@/utils/types/Message";
+
+var stompClient: any = null;
+export default function Home() {
+  const [mounted, setMounted] = useState(false);
+  const { theme, setTheme } = useTheme();
+  const accessToken = getCookie(COOKIES_KEY.AccessToken);
+  const userId = getCookie(COOKIES_KEY.UID);
+  const socket = new SockJS("http://localhost:8080/ws");
+  const stompClient = Stomp.over(socket);
+  const messageBoxRef = useRef<HTMLDivElement | null>(null);
+
+  const [userData, setUserData] = useState<UserData[]>([]);
+  const [messageContainerValue, setMessageContainerValue] = useState<
+    MessageFields[]
+  >([]);
+  console.log(messageContainerValue);
+  const [selectedUser, setSelectedUser] = useState<UserData>();
+  //todo
+  const handleGetAllUser = async () => {
+    try {
+      const accessToken = getCookie(COOKIES_KEY.AccessToken);
+      const userId = getCookie(COOKIES_KEY.UID);
+      if (accessToken && userId) {
+        const res = await getAllFollowingUser(accessToken, userId);
+        console.log(res.data.body.data);
+        setUserData(res.data.body.data);
+      }
+    } catch (error) {
+      console.log(error);
+    }
+  };
+  const handleSelectUser = (user: UserData) => {
+    setSelectedUser(user);
+    const senderId = getCookie(COOKIES_KEY.UID);
+    if (senderId) {
+      chatResponse(senderId, user.id);
+    }
+  };
+  const chatResponse = async (
+    senderId: string,
+    recipientId: string
+  ): Promise<any> => {
+    try {
+      const accessToken = getCookie(COOKIES_KEY.AccessToken);
+      if (accessToken) {
+        const res = await getUserChatMessage(
+          accessToken,
+          senderId,
+          recipientId
+        );
+        const data = res.data.body.data;
+        setMessageContainerValue(data);
+      }
+    } catch (error) {
+      console.log(error);
+    }
+  };
+
+  const [messageInput, setMessageInput] = useState<string>("");
+
+  const sendMessage = () => {
+    const senderId = getCookie(COOKIES_KEY.UID);
+    if (messageInput && stompClient && selectedUser && senderId) {
+      const chatMessage = {
+        senderId: senderId,
+        recipientId: selectedUser.id,
+        content: messageInput,
+      };
+      stompClient.send("/app/private-message", {}, JSON.stringify(chatMessage));
+      chatResponse(senderId, selectedUser.id);
+    }
+  };
+  const displayMessage = () => {
+    return (
+      <>
+        {messageContainerValue.map((value: MessageFields, index: number) => (
+          <div
+            className={`w-full text-black border-b flex ${
+              userId === value.senderId ? "justify-end" : "justify-start"
+            }`}
+            key={index}
+          >
+            <p className="w-fit bg-white p-[10px]">{value.content}</p>
+          </div>
+        ))}
+      </>
+    );
+  };
+  const connect = (): void => {
+    if (userId) {
+      stompClient.connect({}, onConnected, onError);
+    }
+  };
+  const disconnect = () => {
+    stompClient.disconnect(onDisconnect);
+  };
+  const onConnected = () => {
+    const senderId = getCookie(COOKIES_KEY.UID);
+    if (senderId) {
+      stompClient.subscribe(`/user/${senderId}/private`, onMessageRecieved);
+      stompClient.subscribe(`/user/${senderId}/topic`, onMessageRecieved);
+
+      //register the connected user
+      stompClient.send(
+        "/app/user/online",
+        {},
+        JSON.stringify({
+          id: userId,
+        })
+      );
+    }
+  };
+  const onDisconnect = () => {
+    stompClient.send(
+      "/app/user/disconnect",
+      {},
+      JSON.stringify({
+        id: userId,
+      })
+    );
+  };
+  const onError = () => {};
+  const onMessageRecieved = (payload: any) => {
+    const message = JSON.parse(payload.body);
+    console.log(message);
+    setMessageContainerValue((prev) => [...prev, message]);
+  };
+  useEffect(() => {
+    setMounted(true);
+    connect();
+    const hanleWindownClose = (event: BeforeUnloadEvent) => {
+      onDisconnect();
+      event.preventDefault();
+      event.returnValue("");
+    };
+    window.addEventListener("beforeunload", hanleWindownClose);
+    return () => {
+      window.removeEventListener("beforeunload", hanleWindownClose);
+    };
+  }, []);
+  useEffect(() => {
+    handleGetAllUser();
+  }, []);
+
+  const handleSrollBottom = () => {
+    if(messageBoxRef.current) {
+      const {current: container} = messageBoxRef;
+      container.scrollTop = container.scrollHeight;
+    }
+  }
+  useEffect(() => {
+    handleSrollBottom();
+  }, [messageContainerValue]) ;
+  if (!mounted) return null;
+
+  return (
+    <div className="w-full h-screen flex items-center justify-center">
+      <div className="w-[50%] h-screen  flex flex-col gap-4">
+        <div className="bg-[#ffffff1e] flex flex-row gap-4">
+          {userData.map((item: UserData, index: number) => (
+            <div
+              key={index}
+              className=" w-fit flex justify-center flex-col items-center p-4 border border-[#ffffff1e] rounded-xl cursor-pointer"
+              onClick={() => handleSelectUser(item)}
+            >
+              <Avatar radius="full" src={item.avatar} size="sm"></Avatar>
+              <h1>{item.appUserName}</h1>
+            </div>
+          ))}
+        </div>
+        <div>
+          {selectedUser && (
+            <>
+              <div className="w-full max-h-full h-[700px] bg-[#ffffff1e] p-[20px]">
+                <div className="flex flex-row gap-4 items-center border-b border-[#ffffff1e] pb-4">
+                  <Avatar
+                    radius="full"
+                    src={selectedUser.avatar}
+                    size="sm"
+                  ></Avatar>
+                  <h1>{selectedUser.appUserName}</h1>
+                </div>
+                <div
+                  id="message_container"
+                  className="w-full max-h-screen h-[90%] relative"
+                >
+                  <div
+                    id="message_box"
+                    className="w-full h-[92%] bg-black relative overflow-y-auto"
+                    ref={messageBoxRef}
+                  >
+                    {displayMessage()}
+                  </div>
+                  <div className="absolute w-full bottom-0 flex flex-row gap-2">
+                    <Input
+                      variant="bordered"
+                      type="message"
+                      onChange={(event) => setMessageInput(event.target.value)}
+                    />
+                    <Button variant="solid" onClick={() => sendMessage()}>
+                      Send
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
